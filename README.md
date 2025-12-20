@@ -23,7 +23,7 @@ The MemoryStore stores the config in memory.
 You need to populate it yourself.
 
 ```python
-from tgzr.contextual_settigs import MemoryStore
+from tgzr.contextual_settigs.stores.memory_store import MemoryStore
 
 # Create the store
 store = MemoryStore()
