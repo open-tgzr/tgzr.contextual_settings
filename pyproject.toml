@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tgzr.contextual_settings"
+dynamic = ["version"]
+description = "Manage your configuration data by stacking grouped edits."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+keywords = []
+authors = [
+    { name = "Dee", email = "dee.sometech@gmail.com" }
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+    "pydantic>=2.11.7",
+]
+
+[project.scripts]
+tgzr_contextual_settings_tests = "tgzr.contextual_settings.tests:do_tests"
+tgzr_contextual_settings_demo = "tgzr.contextual_settings.demo.__main__:main"
+
+[project.optional-dependencies]
+demo = [
+    "fastapi[standard]>=0.115.14",
+    "nicegui>=2.20.0",
+    'tgzr.nice',
+]
+
+[project.urls]
+Documentation = "https://github.com/open-tgzr/tgzr.contextual_settings"
+Issues = "https://github.com/open-tgzr/tgzr.contextual_settings/issues"
+Source = "https://github.com/open-tgzr/tgzr.contextual_settings"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+dev1"
+
+[tool.hatch.envs.default]
+installer = "uv"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "./src/tgzr/contextual_settings/_version.py"
+
+[tool.hatch.build]
+# this is needed bc it is otherwise not included in the build:
+artifacts = ['_version.py']
+packages = ["src/tgzr"]
+
+[tool.hatch.build.targets.wheel]
+# this is needed bc it is otherwise not included in the build:
+artifacts = ['_version.py']
+packages = ["src/tgzr"]
