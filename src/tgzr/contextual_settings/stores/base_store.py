@@ -22,7 +22,7 @@ class BaseStore:
 
     def _get_ops(self, context_name) -> ops.OpBatch: ...
 
-    def context_names(self) -> tuple[str, ...]: ...
+    def get_context_names(self) -> tuple[str, ...]: ...
 
     def set_context_info(self, context_name: str, **kwargs: Any) -> None: ...
 
@@ -43,11 +43,12 @@ class BaseStore:
         data = ContextData()
         context_info: dict[str, str | dict[str, str]] | None = None
         history_data = None
+        if with_history:
+            history_data = ContextData()
         for context_name in contexts:
             context_ops = self._get_ops(context_name)
             if with_history:
                 context_info = dict(context_name=context_name)
-                history_data = ContextData()
             context_ops.render(
                 data, history_data=history_data, context_info=context_info
             )
@@ -77,14 +78,35 @@ class BaseStore:
     def set(self, context_name: str, name: str, value: Any) -> None:
         self._append_op(context_name, ops.Set(name, value))
 
+    def toggle(self, context_name: str, name: str) -> None:
+        self._append_op(context_name, ops.Toggle(name))
+
     def add(self, context_name: str, name: str, value: Any) -> None:
         self._append_op(context_name, ops.Add(name, value))
 
     def sub(self, context_name: str, name: str, value: Any) -> None:
         self._append_op(context_name, ops.Sub(name, value))
 
+    def set_item(
+        self, context_name: str, name: str, index: int, item_value: Any
+    ) -> None:
+        self._append_op(context_name, ops.SetItem(name, index, item_value))
+
+    def del_item(self, context_name: str, name: str, index: int) -> None:
+        self._append_op(context_name, ops.DelItem(name, index))
+
     def remove(self, context_name: str, name: str, item: str) -> None:
         self._append_op(context_name, ops.Remove(name, item))
+
+    def append(self, context_name: str, name: str, value: Any) -> None:
+        self._append_op(context_name, ops.Append(name, value))
+
+    def env_override(self, context_name: str, name: str, envvar_name: str) -> None:
+        """Set the value from the given env var only if that env var exists."""
+        self._append_op(context_name, ops.EnvOverride(name, envvar_name))
+
+    def pop(self, context_name: str, name: str, index: int | slice) -> None:
+        self._append_op(context_name, ops.Pop(name, index))
 
     def remove_slice(
         self,
@@ -96,11 +118,15 @@ class BaseStore:
     ) -> None:
         self._append_op(context_name, ops.RemoveSlice(name, start, stop, step))
 
-    def append(self, context_name: str, name: str, value: Any) -> None:
-        self._append_op(context_name, ops.Append(name, value))
-
-    def env_override(self, context_name: str, name: str, envvar_name: str) -> None:
-        self._append_op(context_name, ops.EnvOverride(name, envvar_name))
+    def call(
+        self,
+        context_name: str,
+        name: str,
+        method_name: str,
+        args: list[Any],
+        kwargs: dict[str, Any],
+    ) -> None:
+        self._append_op(context_name, ops.Call(name, method_name, args, kwargs))
 
     def update_context_flat(
         self, context_name: str, flat_dict: dict[str, Any], path: str | None = None
@@ -158,9 +184,19 @@ class BaseStore:
             value = dict()
             k_prefix = path + "."
             for k, v in values.items():
-                if k.startswith(k_prefix):
+                if k == path or k.startswith(k_prefix):
                     rk = k[len(k_prefix) :]  # TODO: should cutting prefix be optional ?
                     value[rk] = v
+            if with_history:
+                history = values["__history__"]
+                value_history = dict()
+                for k, v in history.items():
+                    if k == path or k.startswith(k_prefix):
+                        rk = k[
+                            len(k_prefix) :
+                        ]  # TODO: should cutting prefix be optional ?
+                        value_history[rk] = v
+                value["__history__"] = value_history
         else:
             value = values
 
@@ -177,11 +213,24 @@ class BaseStore:
 
         if path is not None:
             value = values.dot_get(path)
+            history_key = "__history__"
+            if not isinstance(value, ContextData):
+                # The path leads to a value, we need to build an empty parent ContextData:
+                final_key = path.rsplit(".")[-1]
+                history_key = f"__history__.{final_key}"
+                cd = ContextData()
+                cd.dot_set(final_key, value)
+                value = cd
+
+            if with_history:
+                history = values.__history__.dot_get(path)
+                value.dot_set(history_key, history)
         else:
             value = values
 
         if isinstance(value, ContextData):
             value = value.to_dict()
+
         return value
 
     def get_context(

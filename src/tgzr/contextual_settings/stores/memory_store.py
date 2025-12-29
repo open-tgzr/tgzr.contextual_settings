@@ -17,7 +17,7 @@ class MemoryStore(BaseStore):
     def _get_ops(self, context_name) -> ops.OpBatch:
         return self._context_ops[context_name]
 
-    def context_names(self) -> tuple[str, ...]:
+    def get_context_names(self) -> tuple[str, ...]:
         return tuple(self._context_ops.keys())
 
     def set_context_info(self, context_name: str, **kwargs) -> None:

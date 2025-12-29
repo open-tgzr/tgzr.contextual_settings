@@ -199,7 +199,7 @@ class ConfExplorer(ui.column):
         self.rows = []
         self.details_row_index = None
         self.current_row_key = None
-        self.context_names = context_names or list(store.context_names())
+        self.context_names = context_names or list(store.get_context_names() or [])
 
         with self:
             self.context_name_chips = ContextNameChips(

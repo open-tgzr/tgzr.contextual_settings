@@ -100,6 +100,14 @@ def test_get_context_1():
     store.set("DEV", "settings.resolution.width", 100)
     store.set("PROD", "is_prod", True)
 
+    wanted = ("STUDIO", "MyProject", "DEV", "PROD")
+    try:
+        assert store.get_context_names() == wanted
+    except:
+        print(f"   GOT: {store.get_context_names()=}")
+        print(f"Wanted: {wanted}")
+        raise
+
     class ImageSize(pydantic.BaseModel):
         width: int
         height: int

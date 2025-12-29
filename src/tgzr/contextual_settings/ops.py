@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any
 import operator
 import os
+from copy import deepcopy
 
 from .context_data import ContextData
 
 
 class Op:
-
+    _IS_MODIFIER = True  # Must be set to False if the new value doesn't depend on anything but args
     _ENVIRON_GETTER = lambda: os.environ
 
     @classmethod
@@ -28,18 +29,41 @@ class Op:
     def reset_environ_getter(cls) -> None:
         cls._ENVIRON_GETTER = lambda: os.environ
 
-    def __init__(self, key: str, value: Any):
+    def __init__(self, key: str, *args, **kwargs):
         self.key = key
-        self.value = value
+        self.args = args
+        self.kwargs = kwargs
+
+    def summary(self) -> str:
+        args = [repr(arg) for arg in self.args]
+        kwargs = [f"{k}={v!r}" for k, v in self.kwargs.items()]
+        all_args = ", ".join(args + kwargs)
+        return f"{self.__class__.__name__} {all_args}"
 
     def __repr__(self) -> str:
-        return f"{__name__}.{self.__class__.__name__}({self.key!r}, {self.value!r})"
+        args = [repr(arg) for arg in self.args]
+        kwargs = [f"{k}={v!r}" for k, v in self.kwargs.items()]
+        all_args = ", ".join(args + kwargs)
+        return f"{self.__class__.__name__}({self.key}, {all_args})"
+
+    def default_base(self):
+        """
+        The value to use when the base is unset (i.e. == ContextData())."""
+        return None
+
+    def is_pinning(self, old_value: Any, new_value: Any) -> bool:
+        if self._IS_MODIFIER:
+            return False
+        return old_value == new_value
+
+    def is_override(self, old_value: Any, new_value: Any) -> bool:
+        return old_value != new_value
 
     def render(
         self,
         on: ContextData,
         history_data: ContextData | None = None,
-        context_info: dict[str, str | dict[str, str]] | None = None,
+        context_info: dict[str, str | dict[str, str | bool]] | None = None,
     ) -> None:
         value = on.dot_get(self.key)
         apply_info = {}
@@ -50,9 +74,10 @@ class Op:
             if history == ContextData():
                 history = []
             context_info["old_value_repr"] = repr(value)
-            context_info["new_value"] = new_value
+            context_info["new_value_repr"] = repr(new_value)
             context_info["override_info"] = dict(
-                pinned=value == new_value, overridden=value != new_value
+                pinned=self.is_pinning(value, new_value),
+                overridden=self.is_override(value, new_value),
             )
             context_info["apply_info"] = apply_info
             history.append(context_info)
@@ -62,10 +87,10 @@ class Op:
         self,
         on: dict[str, Any],
         history_data: dict[str, Any] | None = None,
-        context_info: dict[str, str | dict[str, str]] | None = None,
+        context_info: dict[str, str | dict[str, str | bool]] | None = None,
     ) -> None:
         # FIXME: refactor render() and render_flat() to avoid repeating code
-        # (I'm tired of bud introduced after a change to one not done in other)
+        # (I'm tired of bugs introduced after a change to one not done in other)
         value = on.get(self.key, None)
         apply_info = {}
         new_value = self.apply(value, apply_info)
@@ -75,7 +100,8 @@ class Op:
             context_info["old_value_repr"] = repr(value)
             context_info["new_value_repr"] = repr(new_value)
             context_info["override_info"] = dict(
-                pinned=value == new_value, overridden=value != new_value
+                pinned=self.is_pinning(value, new_value),
+                overridden=self.is_override(value, new_value),
             )
             context_info["apply_info"] = apply_info
             history.append(context_info)
@@ -97,7 +123,30 @@ class Op:
         ...
 
 
-class Set(Op):
+class Toggle(Op):
+
+    def __init__(self, key: str):
+        super().__init__(key)
+
+    def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
+        return not bool(to)
+
+
+class _SingleArgOp(Op):
+    """
+    Utility base for Op with only a "value" argument.
+    """
+
+    def __init__(self, key: str, value: Any):
+        super().__init__(key, value)
+
+    @property
+    def value(self) -> Any:
+        return self.args[0]
+
+
+class Set(_SingleArgOp):
+    _IS_MODIFIER = False
 
     def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
         if to == self.value:
@@ -105,7 +154,7 @@ class Set(Op):
         return self.value
 
 
-class Append(Op):
+class Append(_SingleArgOp):
 
     def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
         if not to or to == ContextData():
@@ -119,7 +168,7 @@ class Append(Op):
         return value
 
 
-class EnvOverride(Op):
+class EnvOverride(_SingleArgOp):
     """
     Set the value from the given env var only if that
     env var exists.
@@ -138,35 +187,38 @@ class EnvOverride(Op):
         return env_value
 
 
-class Remove(Op):
+class Remove(_SingleArgOp):
 
     def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
         if not to:
             value = []
         else:
-            value = list(to)
+            try:
+                value = list(to)
+            except TypeError:
+                apply_info["Warning"] = (
+                    f"cannot copy base as list: {to}, using empyt list."
+                )
+                value = []
         try:
             value.remove(self.value)
-        except ValueError:
-            return []
+        except ValueError as err:
+            apply_info["Aborted"] = str(err)
+            return value
         return value
 
 
 class _OperatorOp(Op):
+    """
+    Base class for Op based on `operator` module operation
+    These are way faster than python implementation.
+    """
+
     OPERATOR = None
 
-    def __init__(self, key: str, *args, **kwargs):
-        super().__init__(key, None)
-        self.args = args
-        self.kwargs = kwargs
-
-    def __str__(self) -> str:
-        args = [repr(arg) for arg in self.args]
-        kwargs = [f"{k}={v!r}" for k, v in self.kwargs.items()]
-        all_args = ", ".join(args + kwargs)
-        return f"{self.__class__.__name__}({self.key}, {all_args})"
-
     def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
+        if isinstance(to, ContextData):
+            to = self.default_base()
         assert (
             self.OPERATOR is not None
         )  # Subclass must override `OPERATOR` class attribute !
@@ -179,12 +231,65 @@ class Add(_OperatorOp):
     def __init__(self, key: str, value: Any):
         super().__init__(key, value)
 
+    def default_base(self):
+        if not self.args:
+            return None
+        return type(self.args[0])()
+
 
 class Sub(_OperatorOp):
     OPERATOR = operator.sub
 
     def __init__(self, key: str, value: Any):
         super().__init__(key, value)
+
+
+class SetItem(_OperatorOp):
+    # OPERATOR = operator.setitem
+
+    def __init__(self, key: str, index: int, item_value: Any):
+        super().__init__(key, index, item_value)
+
+    def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
+        # NB: overridden from _OperatorOp because the operator edits in place
+        # and we don't want that.
+        if isinstance(to, ContextData):
+            to = self.default_base()
+        if not isinstance(to, (list, tuple, dict)):
+            apply_info["Warning"] = (
+                f"cannot set item, base is not a list, tuple or dict: {to}"
+            )
+            return to
+        if isinstance(to, dict):
+            copy = deepcopy(to)
+        else:
+            copy = list(to)
+        operator.setitem(copy, *self.args, **self.kwargs)
+        return copy
+
+
+class DelItem(_OperatorOp):
+    # OPERATOR = operator.delitem
+
+    def __init__(self, key: str, index: int):
+        super().__init__(key, index)
+
+    def apply(self, to: Any, apply_info: dict[str, str]) -> Any:
+        # NB: overridden from _OperatorOp because the operator edits in place
+        # and we don't want that.
+        if isinstance(to, ContextData):
+            to = self.default_base()
+        if not isinstance(to, (list, tuple, dict)):
+            apply_info["Warning"] = (
+                f"cannot set item, base is not a list, tuple or dict: {to}"
+            )
+            return to
+        if isinstance(to, dict):
+            copy = deepcopy(to)
+        else:
+            copy = list(to)
+        operator.delitem(copy, *self.args, **self.kwargs)
+        return copy
 
 
 class Pop(_OperatorOp):
@@ -219,7 +324,7 @@ class OpBatch:
         self,
         on: ContextData,
         history_data: ContextData | None = None,
-        context_info: dict[str, str | dict[str, str]] | None = None,
+        context_info: dict[str, str | dict[str, str | bool]] | None = None,
     ) -> None:
         op_context_info = None
         for op in self._ops:
@@ -227,13 +332,14 @@ class OpBatch:
                 op_context_info = context_info.copy()
                 op_context_info["op_name"] = op.__class__.__name__
                 op_context_info["op"] = repr(op)
+                op_context_info["summary"] = op.summary()
             op.render(on, history_data, op_context_info)
 
     def render_flat(
         self,
         on: dict[str, Any],
         history_data: dict[str, Any] | None = None,
-        context_info: dict[str, str | dict[str, str]] | None = None,
+        context_info: dict[str, str | dict[str, str | bool]] | None = None,
     ) -> None:
         op_context_info = None
         for op in self._ops:
@@ -241,4 +347,5 @@ class OpBatch:
                 op_context_info = context_info.copy()
                 op_context_info["op_name"] = op.__class__.__name__
                 op_context_info["op"] = repr(op)
+                op_context_info["summary"] = op.summary()
             op.render_flat(on, history_data, op_context_info)
