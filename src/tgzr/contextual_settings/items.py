@@ -103,7 +103,7 @@ class Collection[ItemType](pydantic.BaseModel):
             return self.add(self.item_type(), name, **values)
 
     def add(self, item_type: Type[ItemType], name: str, **values) -> ItemType:
-        uid = values.pop("uid", uuid4())
+        uid = values.pop("uid", uuid4())  # FIXME: this does not work with NamedItem !
         item = item_type(uid=uid, name=name, **values)
         self.items.append(item)
         return item
