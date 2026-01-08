@@ -1,3 +1,5 @@
+*.env
+
 # hatch vcs generated:
 _version.py
 

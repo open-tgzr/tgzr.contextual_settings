@@ -51,7 +51,7 @@ ItemType = TypeVar("ItemType", bound=Item)
 T = TypeVar("T")
 
 
-class Collection[ItemType](pydantic.BaseModel):
+class Collection[ItemType: Item](pydantic.BaseModel):
     items: list[ItemType] = pydantic.Field(default_factory=list)
 
     @classmethod

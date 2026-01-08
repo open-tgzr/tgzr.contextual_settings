@@ -32,7 +32,6 @@ class BaseStore:
         """
         Return the context name with env var resolved and path expanded.
         See `tgzr.contextual_settings.context_names.expand_context_name()` for details.
-
         """
         envvars = get_environ()
         return expand_context_name(context_name, vars=envvars)
@@ -171,15 +170,12 @@ class BaseStore:
         deep_dict = model.model_dump(exclude_defaults=exclude_defaults)
         self.update_context_dict(context_name, deep_dict, path)
 
-    def get_context_flat(
+    def _build_context_flat(
         self,
-        context: list[str],
+        values: dict[str, Any],
         path: str | None = None,
         with_history: bool = False,
-    ) -> dict[str, Any]:
-        values = self._resolve_flat(expand_context_names(context), with_history)
-        # FIXME: reduce string template in all flat values here!
-
+    ):
         if path is not None:
             value = dict()
             k_prefix = path + "."
@@ -202,15 +198,22 @@ class BaseStore:
 
         return value
 
-    def get_context_dict(
+    def get_context_flat(
         self,
         context: list[str],
         path: str | None = None,
         with_history: bool = False,
     ) -> dict[str, Any]:
-        values = self._resolve_context_data(expand_context_names(context), with_history)
-        # FIXME: reduce string template in all values here!
+        values = self._resolve_flat(expand_context_names(context), with_history)
+        # FIXME: reduce string template in all flat values here!
+        return self._build_context_flat(values, path, with_history)
 
+    def _build_context_dict(
+        self,
+        values: ContextData,
+        path: str | None = None,
+        with_history: bool = False,
+    ):
         if path is not None:
             value = values.dot_get(path)
             history_key = "__history__"
@@ -232,6 +235,41 @@ class BaseStore:
             value = value.to_dict()
 
         return value
+
+    def get_context_dict(
+        self, context: list[str], path: str | None = None, with_history: bool = False
+    ) -> dict[str, Any]:
+        values = self._resolve_context_data(expand_context_names(context), with_history)
+        # FIXME: reduce string template in all values here!
+
+        return self._build_context_dict(values, path, with_history)
+
+    def _build_context(
+        self,
+        values: ContextData,
+        model_type: type[ModelType],
+        path: str | None = None,
+    ) -> ModelType:
+        if path is not None:
+            value = values.dot_get(path)
+        else:
+            value = values
+
+        dict_value = value.to_dict()
+
+        # FIXME: try/except this line to report that the model_type is missing defaults:
+        try:
+            defaults = model_type()
+        except:
+            raise ValueError(
+                f"Could not instantiate {model_type} without args. Does it define default for all fields?"
+            )
+
+        conformed = self._conform_obj(dict_value, defaults.model_dump())
+        model = model_type.model_validate(conformed)
+
+        # logger.debug(f"->COMPUTED CONTEXT IN {time.time()-t:.5f}")
+        return model
 
     def get_context(
         self,
@@ -263,27 +301,8 @@ class BaseStore:
         t = time.time()
         values = self._resolve_context_data(expand_context_names(context))
         # FIXME: reduce string template in all values here!
-
-        if path is not None:
-            value = values.dot_get(path)
-        else:
-            value = values
-
-        dict_value = value.to_dict()
-
-        # FIXME: try/except this line to report that the model_type is missing defaults:
-        try:
-            defaults = model_type()
-        except:
-            raise ValueError(
-                f"Could not instantiate {model_type} without args. Does it define default for all fields?"
-            )
-
-        conformed = self._conform_obj(dict_value, defaults.model_dump())
-        model = model_type.model_validate(conformed)
-
         logger.debug(f"->COMPUTED CONTEXT IN {time.time()-t:.5f}")
-        return model
+        return self._build_context(values, model_type, path)
 
     @classmethod
     def _conform_obj(
