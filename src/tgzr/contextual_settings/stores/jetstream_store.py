@@ -382,8 +382,8 @@ async def run_service_forever(
     alive = True
     while alive:
         try:
-            await asyncio.sleep(5)
-            print("Alive:", alive)
+            await asyncio.sleep(60)
+            # print("Alive:", alive)
         except (Exception, KeyboardInterrupt, asyncio.exceptions.CancelledError) as err:
             print("!!!", err)
             alive = False
@@ -414,26 +414,34 @@ async def test_client():
     nats_endpoint = "tls://connect.ngs.global"
     secret_cred = "/tmp/test.creds"
     stream_name = "test_settings"
-    subject_prefix = "test.settings.org1"
+    subject_prefix = "test.settings.proto"
 
-    nc = await nats.connect(
-        nats_endpoint,
-        user_credentials=secret_cred,
-        name="contextual_settings_js_client",
-    )
+    try:
+        nc = await nats.connect(
+            nats_endpoint,
+            user_credentials=secret_cred,
+            name="contextual_settings_js_client",
+        )
+    except Exception as err:
+        print("Could not connect, Aborting because:", err)
+        return
     client = JetStreamStoreClient(nc, stream_name, subject_prefix)
 
-    if 0:
-        await client.set_context_info("test_context", color="red")
-    if 1:
-        context_info = await client.get_context_info("test_context")
-        print("->", context_info)
+    # toggle these to test situations:
+    WRITE = False
+    READ = True
 
-    if 0:
+    if WRITE:
+        await client.set_context_info("test_context", color="red")
+    if READ:
+        context_info = await client.get_context_info("test_context")
+        print("--> context info", context_info)
+
+    if WRITE:
         await client.set("my_context", "my_key", "my_value")
-    if 1:
+    if READ:
         context = await client.get_context_flat(["my_context"])
-        print("--> ", context)
+        print("--> flat context:", context)
 
     print("Stopping")
     await nc.drain()
