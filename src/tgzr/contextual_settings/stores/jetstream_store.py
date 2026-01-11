@@ -42,7 +42,9 @@ class RemoteMemoryStore(MemoryStore):
         """
         context_data = super()._resolve_context_data(contexts, with_history)
         dict_values = context_data.to_dict()
-        print("----> RemoteMemoryStore._resolve_context_data(...):", context_data)
+        # print("----> RemoteMemoryStore._resolve_context_data(...):")
+        # print("   ContextData:", context_data)
+        # print("   dict_values:", dict_values)
         return dict_values
 
     if 0:
@@ -71,13 +73,13 @@ class RemoteMemoryStore(MemoryStore):
                 return super()._build_context(values, model_type, path)
 
 
-class JetStreamStoreService(MemoryStore):
+class JetStreamStoreService:
 
     def __init__(
         self, nc: nats.aio.client.Client, stream_name: str, subject_prefix: str
     ):
         super().__init__()
-        self._backend_store = MemoryStore()
+        self._backend_store = RemoteMemoryStore()
 
         self._nc = nc
         self._js = self._nc.jetstream()
@@ -153,14 +155,14 @@ class JetStreamStoreService(MemoryStore):
         try:
             meth = getattr(self._backend_store, cmd_name)
         except AttributeError:
-            print(f" > {cmd_name} ERROR: unknown cmd")
+            print(f"    > {cmd_name} ERROR: unknown cmd")
             return
         try:
             meth(**kwargs)
         except Exception as err:
-            print(f" > {cmd_name} ERROR:", err)
+            print(f"    > {cmd_name} ERROR:", err)
         else:
-            print(f" > {cmd_name} OK.")
+            print(f"    > {cmd_name} Ok.")
 
     def execute_query(self, query_name, kwargs):
         print("QUERY:", query_name, kwargs)
@@ -292,7 +294,7 @@ class JetStreamStoreClient(BaseStore):
         data = await self._send_query(
             "_resolve_context_data", contexts=contexts, with_history=with_history
         )
-        context_data = ContextData(**data)
+        context_data = ContextData.from_dict(data)
         return context_data
 
     async def get_context_dict(
@@ -333,6 +335,45 @@ class JetStreamStoreClient(BaseStore):
         # return self._context_info[context_name]
 
     # ---
+
+    async def update_context(
+        self,
+        context_name: str,
+        model: ModelType,
+        path: str | None = None,
+        exclude_defaults: bool = True,
+    ):
+        # NB: this is a copy of super().update_context() with await on update_context_dict()
+        # It the base implementation changes, this one must be updated accordingly!
+        deep_dict = model.model_dump(exclude_defaults=exclude_defaults)
+        await self.update_context_dict(context_name, deep_dict, path)
+
+    async def update_context_dict(
+        self,
+        context_name: str,
+        deep_dict: dict[str, Any | dict[str, Any]],
+        path: str | None = None,
+    ) -> None:
+        return await self._send_cmd(
+            "update_context_dict",
+            context_name=context_name,
+            deep_dict=deep_dict,
+            path=path,
+        )
+
+    async def update_context_flat(
+        self, context_name: str, flat_dict: dict[str, Any], path: str | None = None
+    ) -> None:
+        return await self._send_cmd(
+            "update_context_flat",
+            context_name=context_name,
+            flat_dict=flat_dict,
+            path=path,
+        )
+
+    #
+    # ---
+    #
 
     async def set(self, context_name: str, name: str, value: Any) -> None:
         await self._send_cmd("set", context_name=context_name, name=name, value=value)
@@ -512,15 +553,21 @@ def start_service(
     )
 
 
-async def test_client():
+async def test_client(
+    nats_endpoint: str,
+    secret_cred: str,
+    stream_name: str,
+    subject_prefix: str,
+):
+    import rich
+
     broker = JetStreamClientBroker(
-        stream_name="test_settings",
-        subject_prefix="test.settings.proto",
+        stream_name=stream_name,
+        subject_prefix=subject_prefix,
     )
     client = JetStreamStoreClient(broker)
-    await client.connect(
-        servers="tls://connect.ngs.global", user_credentials="/tmp/test.creds"
-    )
+    await client.connect(servers=nats_endpoint, user_credentials=secret_cred)
+
     # toggle these to test situations:
     WRITE = False
     READ = True
@@ -538,24 +585,64 @@ async def test_client():
             context = await client.get_context_flat(["my_context"])
             print("--> flat context:", context)
 
-    if READ:
-        context = await client.get_context_dict(["my_context"], with_history=True)
-        print("--> dict context w/history:", context)
+        if READ:
+            context = await client.get_context_dict(["my_context"], with_history=True)
+            rich.print("--> dict context w/history:", context)
+
+    if 1:
+        import pydantic
+
+        class MySettings(pydantic.BaseModel):
+            value_str: str | None = None
+            value_int: int = 0
+
+        if WRITE:
+            my_settings = MySettings(value_str="Yolo!", value_int=9)
+            await client.update_context(
+                "my_context", my_settings, "my_settings_key", exclude_defaults=False
+            )
+        if READ:
+            context = await client.get_context(
+                ["my_context"], MySettings, "my_settings_key"
+            )
+            rich.print("--> dict context w/history:", context)
 
     print("Stopping")
     await client.disconnect()
 
 
-def start_test_client():
-    asyncio.run(test_client())
+def start_test_client(
+    nats_endpoint: str,
+    secret_cred: str,
+    stream_name: str,
+    subject_prefix: str,
+):
+    asyncio.run(
+        test_client(
+            nats_endpoint,
+            secret_cred,
+            stream_name,
+            subject_prefix,
+        )
+    )
 
 
 if __name__ == "__main__":
     import sys
 
     if sys.argv[-1] == "service":
-        start_service()
+        start_service(
+            nats_endpoint="tls://connect.ngs.global",
+            secret_cred="/tmp/test.creds",
+            stream_name="dev_settings",
+            subject_prefix="dev.settings.proto",
+        )
     elif sys.argv[-1] == "client":
-        start_test_client()
+        start_test_client(
+            nats_endpoint="tls://connect.ngs.global",
+            secret_cred="/tmp/test.creds",
+            stream_name="dev_settings",
+            subject_prefix="dev.settings.proto",
+        )
     else:
         print("Bro.... -___-'")

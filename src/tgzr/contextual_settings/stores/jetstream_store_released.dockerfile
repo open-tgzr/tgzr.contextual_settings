@@ -16,8 +16,9 @@ ENV UV_LINK_MODE=copy
 
 # Install the released code and secret additional dependencies
 RUN uv venv 
-RUN uv pip install --no-cache nats-py[nkeys]
-RUN uv pip install --no-cache tgzr.contextual_settings
+RUN uv pip install nats-py[nkeys]
+ADD "https://www.random.org/cgi-bin/randbyte?nbytes=10&format=h" skipcache
+RUN uv pip install tgzr.contextual_settings
 
 # Reset the entrypoint, don't invoke `uv`
 ENTRYPOINT []

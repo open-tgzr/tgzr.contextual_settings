@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 from types import SimpleNamespace
 import functools
@@ -5,6 +7,20 @@ import functools
 
 class ContextData(SimpleNamespace):
     # FIXME: ensure key is never named like one of these methods!
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ContextData:
+        if not isinstance(d, dict):
+            return d
+
+        # Recursively convert nested dictionaries
+        converted = {}
+        for key, value in d.items():
+            if isinstance(value, dict):
+                converted[key] = ContextData.from_dict(value)
+            else:
+                converted[key] = value
+        return ContextData(**converted)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
