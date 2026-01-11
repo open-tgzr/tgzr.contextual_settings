@@ -632,17 +632,19 @@ if __name__ == "__main__":
 
     if sys.argv[-1] == "service":
         start_service(
-            nats_endpoint="tls://connect.ngs.global",
-            secret_cred="/tmp/test.creds",
-            stream_name="dev_settings",
-            subject_prefix="dev.settings.proto",
+            # nats_endpoint="tls://connect.ngs.global",
+            # secret_cred="/tmp/test.creds",
+            # stream_name="dev_settings",
+            # subject_prefix="dev.settings.proto",
         )
     elif sys.argv[-1] == "client":
         start_test_client(
             nats_endpoint="tls://connect.ngs.global",
             secret_cred="/tmp/test.creds",
-            stream_name="dev_settings",
-            subject_prefix="dev.settings.proto",
+            # stream_name="dev_settings",
+            stream_name="test_settings",
+            # subject_prefix="dev.settings.proto",
+            subject_prefix="test.settings.proto",
         )
     else:
         print("Bro.... -___-'")
