@@ -213,7 +213,7 @@ class BaseStore:
         values: ContextData,
         path: str | None = None,
         with_history: bool = False,
-    ):
+    ) -> dict[str, Any]:
         if path is not None:
             value = values.dot_get(path)
             history_key = "__history__"

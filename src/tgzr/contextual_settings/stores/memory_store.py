@@ -1,7 +1,7 @@
 from typing import Any
 from collections import defaultdict
 
-from .base_store import BaseStore, ops
+from .base_store import BaseStore, ops, ModelType
 from ..context_data import ContextData
 
 

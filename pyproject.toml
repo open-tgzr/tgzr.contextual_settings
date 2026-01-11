@@ -29,6 +29,9 @@ tgzr_contextual_settings_tests = "tgzr.contextual_settings.tests:do_tests"
 tgzr_contextual_settings_demo = "tgzr.contextual_settings.demo.__main__:main"
 
 [project.optional-dependencies]
+jetstream = [
+    "nats-py[nkeys]"
+]
 demo = [
     "fastapi[standard]>=0.115.14",
     "nicegui>=2.20.0",

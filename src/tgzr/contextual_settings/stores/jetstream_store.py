@@ -11,7 +11,7 @@ import nats
 from nats.js import JetStreamContext
 from nats.js.api import DeliverPolicy
 import nats.js.errors
-from nats.aio.client import Client
+import nats.aio.client
 from nats.aio.msg import Msg
 from nats.aio.subscription import Subscription
 
@@ -24,14 +24,52 @@ from .base_store import (
     expand_context_names,
     # get_environ,
 )
-from .memory_store import MemoryStore
+from .memory_store import MemoryStore, ModelType
+from ..context_data import ContextData
 
 logger = logging.getLogger(__name__)
 
 
+class RemoteMemoryStore(MemoryStore):
+    """
+    The Memory store exchange data in the form of ContextData which
+    is not wire compliant (jsonable) so we need to adapt
+    """
+
+    def _resolve_context_data(
+        self, contexts: list[str], with_history: bool = False
+    ) -> dict[str, Any]:
+        context_data = super()._resolve_context_data(contexts, with_history)
+        return context_data.to_dict()
+
+    def _build_context_dict(
+        self,
+        dict_values: dict[str, Any],
+        path: str | None = None,
+        with_history: bool = False,
+    ):
+        values = ContextData(**dict_values)
+        return super()._build_context_dict(values, path, with_history)
+
+    if 0:
+        # This one is never called from the client, it cannot send
+        # the resulting ModelType...
+        # (client is building it itself)
+        def _build_context(
+            self,
+            dict_values: dict[str, Any],
+            model_type: type[ModelType],
+            path: str | None = None,
+        ) -> ModelType:
+            values = ContextData(**dict_values)
+            return super()._build_context(values, model_type, path)
+
+
 class JetStreamStoreService(MemoryStore):
 
-    def __init__(self, nc: Client, stream_name: str, subject_prefix: str):
+    def __init__(
+        self, nc: nats.aio.client.Client, stream_name: str, subject_prefix: str
+    ):
         super().__init__()
         self._backend_store = MemoryStore()
 
@@ -134,16 +172,59 @@ class JetStreamStoreService(MemoryStore):
         return result
 
 
-class JetStreamStoreClient(BaseStore):
-    def __init__(self, nc: nats.NATS, stream_name: str, subject_prefix: str):
-        self._nc = nc
-        self._js = nc.jetstream()
+class ClientBroker:
+    """
+    Abstract utility class managing the nats connection.
+    Inherit this if you need to connect using an existing nats client.
+    """
+
+    def __init__(self, stream_name: str, subject_prefix: str):
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+
+    async def connect(self, **kargs) -> None: ...
+    async def disconnect(self) -> None: ...
+    async def send_cmd(self, cmd_name, **kwargs) -> None: ...
+    async def send_query(self, query_name: str, **kwargs) -> Any: ...
+    async def _on_touch_event(self, event) -> None: ...
+
+
+class JetStreamClientBroker(ClientBroker):
+    """
+    A ClientBroker creating its own nats connection during its `connect(...)` call.
+    """
+
+    def __init__(self, stream_name: str, subject_prefix: str):
+        super().__init__(stream_name=stream_name, subject_prefix=subject_prefix)
         self._cmd_subject_prefix = f"{subject_prefix}.$CMD."
         self._request_subject_prefix = f"{subject_prefix}.$QUERY."
+        self._touch_event_prefix = f"{subject_prefix}.$EVENT."
 
-    async def _send_cmd(self, cmd_name, **kwargs) -> None:
+        self._touch_subscription = None
+
+    async def connect(self, servers: str | list[str], user_credentials: str):
+        try:
+            nc = await nats.connect(
+                servers,
+                user_credentials=user_credentials,
+                name="contextual_settings_js_client",
+            )
+        except Exception as err:
+            print("Could not connect, Aborting because:", err)
+            return
+        else:
+            self._nc = nc
+            self._js = nc.jetstream()
+            self._touch_subscription = await self._nc.subscribe(
+                self._touch_event_prefix + ">", cb=self._on_touch_event
+            )
+
+    async def disconnect(self):
+        if self._touch_subscription is not None:
+            await self._touch_subscription.unsubscribe()
+        await self._nc.drain()
+
+    async def send_cmd(self, cmd_name, **kwargs) -> None:
         subject = self._cmd_subject_prefix + cmd_name
         payload = json.dumps(kwargs)
         ack = await self._js.publish(
@@ -151,18 +232,33 @@ class JetStreamStoreClient(BaseStore):
         )
         print("CMD SENT", ack)
 
-    async def _send_query(self, query_name: str, **kwargs) -> Any:
+    async def send_query(self, query_name: str, **kwargs) -> Any:
         subject = self._request_subject_prefix + query_name
         payload = json.dumps(kwargs)
         response = await self._nc.request(subject, payload.encode(), timeout=0.5)
         data = json.loads(response.data.decode())
+        print("[QUERY SENT]", query_name, kwargs, "@", subject, "->", response)
         return data
 
-    # def _append_op(self, context_name: str, op: ops.Op) -> None:
-    #     self._context_ops[context_name].append(op)
+    async def _on_touch_event(self, msg) -> None:
+        print("Got touch Event:", msg)
 
-    # def _get_ops(self, context_name) -> ops.OpBatch:
-    #     return self._context_ops[context_name]
+
+class JetStreamStoreClient(BaseStore):
+    def __init__(self, broker: ClientBroker):
+        self._broker = broker
+
+    async def connect(self, *args, **kwargs) -> None:
+        await self._broker.connect(*args, **kwargs)
+
+    async def disconnect(self) -> None:
+        await self._broker.disconnect()
+
+    async def _send_cmd(self, cmd_name, **kwargs) -> None:
+        await self._broker.send_cmd(cmd_name, **kwargs)
+
+    async def _send_query(self, query_name: str, **kwargs) -> Any:
+        return await self._broker.send_query(query_name=query_name, **kwargs)
 
     # ---
 
@@ -188,7 +284,7 @@ class JetStreamStoreClient(BaseStore):
         self, contexts: list[str], with_history: bool = False
     ) -> ContextData:
         data = await self._send_query(
-            "context_data", contexts=contexts, with_history=with_history
+            "_resolve_context_data", contexts=contexts, with_history=with_history
         )
         context_data = ContextData(**data)
         return context_data
@@ -411,40 +507,37 @@ def start_service(
 
 
 async def test_client():
-    nats_endpoint = "tls://connect.ngs.global"
-    secret_cred = "/tmp/test.creds"
-    stream_name = "test_settings"
-    subject_prefix = "test.settings.proto"
-
-    try:
-        nc = await nats.connect(
-            nats_endpoint,
-            user_credentials=secret_cred,
-            name="contextual_settings_js_client",
-        )
-    except Exception as err:
-        print("Could not connect, Aborting because:", err)
-        return
-    client = JetStreamStoreClient(nc, stream_name, subject_prefix)
-
+    broker = JetStreamClientBroker(
+        stream_name="test_settings",
+        subject_prefix="test.settings.proto",
+    )
+    client = JetStreamStoreClient(broker)
+    await client.connect(
+        servers="tls://connect.ngs.global", user_credentials="/tmp/test.creds"
+    )
     # toggle these to test situations:
     WRITE = False
     READ = True
 
-    if WRITE:
-        await client.set_context_info("test_context", color="red")
-    if READ:
-        context_info = await client.get_context_info("test_context")
-        print("--> context info", context_info)
+    if 0:
+        if WRITE:
+            await client.set_context_info("test_context", color="red")
+        if READ:
+            context_info = await client.get_context_info("test_context")
+            print("--> context info", context_info)
 
-    if WRITE:
-        await client.set("my_context", "my_key", "my_value")
+        if WRITE:
+            await client.set("my_context", "my_key", "my_value 2")
+        if READ:
+            context = await client.get_context_flat(["my_context"])
+            print("--> flat context:", context)
+
     if READ:
-        context = await client.get_context_flat(["my_context"])
-        print("--> flat context:", context)
+        context = await client.get_context_dict(["my_context"], with_history=True)
+        print("--> dict context w/history:", context)
 
     print("Stopping")
-    await nc.drain()
+    await client.disconnect()
 
 
 def start_test_client():
