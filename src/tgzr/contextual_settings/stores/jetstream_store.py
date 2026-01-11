@@ -31,38 +31,44 @@ logger = logging.getLogger(__name__)
 
 
 class RemoteMemoryStore(MemoryStore):
-    """
-    The Memory store exchange data in the form of ContextData which
-    is not wire compliant (jsonable) so we need to adapt
-    """
 
     def _resolve_context_data(
         self, contexts: list[str], with_history: bool = False
     ) -> dict[str, Any]:
+        """
+        The MemoryStore returns a ContextData here, but it's not serializable
+        so we return a dict instead and the client rebuilds the ContextData
+        in its _resolve_context_data() method.
+        """
         context_data = super()._resolve_context_data(contexts, with_history)
-        return context_data.to_dict()
-
-    def _build_context_dict(
-        self,
-        dict_values: dict[str, Any],
-        path: str | None = None,
-        with_history: bool = False,
-    ):
-        values = ContextData(**dict_values)
-        return super()._build_context_dict(values, path, with_history)
+        dict_values = context_data.to_dict()
+        print("----> RemoteMemoryStore._resolve_context_data(...):", context_data)
+        return dict_values
 
     if 0:
-        # This one is never called from the client, it cannot send
-        # the resulting ModelType...
-        # (client is building it itself)
-        def _build_context(
+        # These are not used remotely so we don't need to addapt their signature
+        # but someday we might need it so I'll keep it here:
+        def _build_context_dict(
             self,
             dict_values: dict[str, Any],
-            model_type: type[ModelType],
             path: str | None = None,
-        ) -> ModelType:
+            with_history: bool = False,
+        ) -> dict[str, Any]:
             values = ContextData(**dict_values)
-            return super()._build_context(values, model_type, path)
+            return super()._build_context_dict(values, path, with_history)
+
+        if 0:
+            # This one is never called from the client, it cannot send
+            # the resulting ModelType...
+            # (client is building it itself)
+            def _build_context(
+                self,
+                dict_values: dict[str, Any],
+                model_type: type[ModelType],
+                path: str | None = None,
+            ) -> ModelType:
+                values = ContextData(**dict_values)
+                return super()._build_context(values, model_type, path)
 
 
 class JetStreamStoreService(MemoryStore):
