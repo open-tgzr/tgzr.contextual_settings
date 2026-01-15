@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import os
+import uuid
 
 import nats
 from nats.js import JetStreamContext
@@ -28,6 +29,14 @@ from .memory_store import MemoryStore, ModelType
 from ..context_data import ContextData
 
 logger = logging.getLogger(__name__)
+
+
+class ExtendedJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, uuid.UUID):
+            # if the obj is uuid, we simply return the value of uuid
+            return obj.hex
+        return json.JSONEncoder.default(self, obj)
 
 
 class RemoteMemoryStore(MemoryStore):
@@ -147,7 +156,7 @@ class JetStreamStoreService:
         data = msg.data.decode()
         kwargs = json.loads(data)
         result = self.execute_query(cmd, kwargs)
-        payload = json.dumps(result)
+        payload = json.dumps(result, cls=ExtendedJSONEncoder)
         await self._nc.publish(msg.reply, payload.encode())
 
     def execute_cmd(self, cmd_name, kwargs):
@@ -234,7 +243,8 @@ class JetStreamClientBroker(ClientBroker):
 
     async def send_cmd(self, cmd_name, **kwargs) -> None:
         subject = self._cmd_subject_prefix + cmd_name
-        payload = json.dumps(kwargs)
+        payload = json.dumps(kwargs, cls=ExtendedJSONEncoder)
+
         ack = await self._js.publish(
             subject, payload.encode(), stream=self._stream_name
         )
@@ -242,7 +252,7 @@ class JetStreamClientBroker(ClientBroker):
 
     async def send_query(self, query_name: str, **kwargs) -> Any:
         subject = self._request_subject_prefix + query_name
-        payload = json.dumps(kwargs)
+        payload = json.dumps(kwargs, cls=ExtendedJSONEncoder)
         response = await self._nc.request(subject, payload.encode(), timeout=0.5)
         data = json.loads(response.data.decode())
         print("[QUERY SENT]", query_name, kwargs, "@", subject, "->", response)
@@ -589,8 +599,9 @@ async def test_client(
             context = await client.get_context_dict(["my_context"], with_history=True)
             rich.print("--> dict context w/history:", context)
 
-    if 1:
-        import pydantic
+    import pydantic
+
+    if 0:
 
         class MySettings(pydantic.BaseModel):
             value_str: str | None = None
@@ -607,6 +618,40 @@ async def test_client(
             )
             rich.print("--> dict context w/history:", context)
 
+    if 1:
+        from ..items import Collection, NamedItem
+
+        class Repo(NamedItem):
+            path: str = ""
+
+        class UserWorkspaceWorkspaceSettings(pydantic.BaseModel):
+            repos: Collection[Repo] = Collection[Repo].Field(Repo)
+            default_repo: str | None = None
+            blessed_repo: str | None = None
+
+        settings = UserWorkspaceWorkspaceSettings()
+        settings.default_repo = "DEFAULT_REPO"
+        settings.repos.add(Repo, "MyRepo")
+
+        key = (
+            "shell_apps.tgzr_shell_app_sdk_nice_app.user_workspaces.workspaces.Testing"
+        )
+        if 0:
+            print("SAVING")
+            await client.update_context(
+                "dee", model=settings, path=key, exclude_defaults=True
+            )
+
+        import rich
+
+        rich.print(
+            "GET SETTINGS:",
+            await client.get_context(
+                context=["system", "admin", "UWS", "UWS/PipeTest", "dee"],
+                model_type=UserWorkspaceWorkspaceSettings,
+                path=key,
+            ),
+        )
     print("Stopping")
     await client.disconnect()
 
@@ -643,12 +688,12 @@ if __name__ == "__main__":
         # subject_prefix="dev.settings.proto",
 
         # FOR ONLINE TEST
-        stream_name = "test_settings"
-        subject_prefix = "test.settings.proto"
+        # stream_name = "test_settings"
+        # subject_prefix = "test.settings.proto"
 
         # FOR PROD
-        # stream_name = "tgzr_settings"
-        # subject_prefix = "tgzr.settings.proto"
+        stream_name = "tgzr_settings"
+        subject_prefix = "tgzr.proto.settings"
 
         start_test_client(
             nats_endpoint="tls://connect.ngs.global",
