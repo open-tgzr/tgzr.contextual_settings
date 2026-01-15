@@ -151,32 +151,32 @@ class JetStreamStoreService:
         await self._nc.publish(msg.reply, payload.encode())
 
     def execute_cmd(self, cmd_name, kwargs):
-        print("CMD:", cmd_name, kwargs)
+        logger.debug(f"CMD: {cmd_name}, {kwargs}")
         try:
             meth = getattr(self._backend_store, cmd_name)
         except AttributeError:
-            print(f"    > {cmd_name} ERROR: unknown cmd")
+            logger.error(f"    > {cmd_name} ERROR: unknown cmd")
             return
         try:
             meth(**kwargs)
         except Exception as err:
-            print(f"    > {cmd_name} ERROR:", err)
+            logger.error(f"    > {cmd_name} ERROR: {err}")
         else:
-            print(f"    > {cmd_name} Ok.")
+            logger.debug(f"    > {cmd_name} Ok.")
 
     def execute_query(self, query_name, kwargs):
-        print("QUERY:", query_name, kwargs)
+        logger.debug(f"QUERY: {query_name}, {kwargs}")
         try:
             meth = getattr(self._backend_store, query_name)
         except AttributeError:
-            print(f" < {query_name} ERROR: unknown query")
+            logger.error(f" < {query_name} ERROR: unknown query")
             return
         try:
             result = meth(**kwargs)
         except Exception as err:
-            print(f" < {query_name} ERROR:", err)
+            logger.error(f" < {query_name} ERROR: {err}")
         else:
-            print(f" < QUERY {query_name} Result: {result}")
+            logger.debug(f" < QUERY {query_name} Result: {result}")
         return result
 
 
@@ -638,13 +638,23 @@ if __name__ == "__main__":
             # subject_prefix="dev.settings.proto",
         )
     elif sys.argv[-1] == "client":
+        # FOR DEV
+        # stream_name="dev_settings",
+        # subject_prefix="dev.settings.proto",
+
+        # FOR ONLINE TEST
+        stream_name = "test_settings"
+        subject_prefix = "test.settings.proto"
+
+        # FOR PROD
+        # stream_name = "tgzr_settings"
+        # subject_prefix = "tgzr.settings.proto"
+
         start_test_client(
             nats_endpoint="tls://connect.ngs.global",
             secret_cred="/tmp/test.creds",
-            # stream_name="dev_settings",
-            stream_name="test_settings",
-            # subject_prefix="dev.settings.proto",
-            subject_prefix="test.settings.proto",
+            stream_name=stream_name,
+            subject_prefix=subject_prefix,
         )
     else:
         print("Bro.... -___-'")
