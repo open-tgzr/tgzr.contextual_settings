@@ -8,6 +8,7 @@ import time
 import os
 import uuid
 
+import rich
 import nats
 from nats.js import JetStreamContext
 from nats.js.api import DeliverPolicy
@@ -51,9 +52,6 @@ class RemoteMemoryStore(MemoryStore):
         """
         context_data = super()._resolve_context_data(contexts, with_history)
         dict_values = context_data.to_dict()
-        # print("----> RemoteMemoryStore._resolve_context_data(...):")
-        # print("   ContextData:", context_data)
-        # print("   dict_values:", dict_values)
         return dict_values
 
     if 0:
@@ -96,14 +94,21 @@ class JetStreamStoreService:
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
 
+        self._cmd_replayed_last_seq: int | None = None
         self._cmd_subject = f"{subject_prefix}.$CMD.>"
         self._cmd_sub: JetStreamContext.PushSubscription | None = None
         self._query_subject = f"{subject_prefix}.$QUERY.>"
         self._query_sub: Subscription | None = None
+        self._notification_subject = f"{subject_prefix}.$EVENT"
 
         self._alive = False
 
     async def connect(self) -> bool:
+        # before connecting, we get the last_seq in the cmd stream so
+        # we can use it to skip emiting notification for 'replayed' cmds:
+        info = await self._js.stream_info(self._stream_name)
+        self._cmd_replayed_last_seq = info.state.last_seq
+
         try:
             self._cmd_sub = await self._js.subscribe(
                 self._cmd_subject,
@@ -130,6 +135,9 @@ class JetStreamStoreService:
         else:
             print("Subcribed to", self._query_sub.subject)
 
+        print("JetStreamStoreService connected.")
+        print(f"Will send notifications to {self._notification_subject}")
+
         return True
 
     async def disconnet(self):
@@ -140,6 +148,14 @@ class JetStreamStoreService:
         if self._query_sub is not None:
             await self._query_sub.unsubscribe()
 
+    async def emit_setting_touched(self, context_name: str, name: str, **more):
+        data = dict(context_name=context_name, name=name)
+        data.update(more)
+        payload = json.dumps(data, cls=ExtendedJSONEncoder).encode()
+        touched_subject = self._notification_subject + ".touched"
+        await self._nc.publish(touched_subject, payload=payload)
+        print("Notification sent:", touched_subject, payload)
+
     async def _on_cmd_msg(self, msg: Msg):
         cmd = msg.subject.split("$CMD.")[-1]
         data = msg.data.decode()
@@ -148,8 +164,19 @@ class JetStreamStoreService:
         except json.decoder.JSONDecodeError as err:
             print("Bad cmd payload:", err)
             return
-        self.execute_cmd(cmd, kwargs)
-        await msg.ack()
+        await self.execute_cmd(cmd, kwargs)
+        # await msg.ack() no ack needed for ordered consumers !
+
+        if (
+            self._cmd_replayed_last_seq
+            and msg.metadata.sequence.stream <= self._cmd_replayed_last_seq
+        ):
+            # this is not 'replayed' cmd sent from stream memory at startup
+            # we don't want to send notification for those.
+            print(f"Skipping notification for replayed cmd {cmd}({kwargs}) ")
+            return
+        if "context_name" in kwargs and "name" in kwargs:
+            await self.emit_setting_touched(**kwargs)
 
     async def _on_query_msg(self, msg: Msg):
         cmd = msg.subject.split("$QUERY.")[-1]
@@ -159,7 +186,7 @@ class JetStreamStoreService:
         payload = json.dumps(result, cls=ExtendedJSONEncoder)
         await self._nc.publish(msg.reply, payload.encode())
 
-    def execute_cmd(self, cmd_name, kwargs):
+    async def execute_cmd(self, cmd_name, kwargs):
         logger.debug(f"CMD: {cmd_name}, {kwargs}")
         try:
             meth = getattr(self._backend_store, cmd_name)
@@ -198,12 +225,16 @@ class ClientBroker:
     def __init__(self, stream_name: str, subject_prefix: str):
         self._stream_name = stream_name
         self._subject_prefix = subject_prefix
+        self._on_touched = []
 
     async def connect(self, **kargs) -> None: ...
     async def disconnect(self) -> None: ...
     async def send_cmd(self, cmd_name, **kwargs) -> None: ...
     async def send_query(self, query_name: str, **kwargs) -> Any: ...
+
     async def _on_touch_event(self, event) -> None: ...
+    def add_on_touched(self, coro):
+        self._on_touched.append(coro)
 
 
 class JetStreamClientBroker(ClientBroker):
@@ -260,6 +291,8 @@ class JetStreamClientBroker(ClientBroker):
 
     async def _on_touch_event(self, msg) -> None:
         print("Got touch Event:", msg)
+        for on_touched in self._on_touched:
+            await on_touched(msg)
 
 
 class JetStreamStoreClient(BaseStore):
@@ -271,6 +304,9 @@ class JetStreamStoreClient(BaseStore):
 
     async def disconnect(self) -> None:
         await self._broker.disconnect()
+
+    def add_on_touched(self, coro):
+        self._broker.add_on_touched(coro)
 
     async def _send_cmd(self, cmd_name, **kwargs) -> None:
         await self._broker.send_cmd(cmd_name, **kwargs)
@@ -569,7 +605,6 @@ async def test_client(
     stream_name: str,
     subject_prefix: str,
 ):
-    import rich
 
     broker = JetStreamClientBroker(
         stream_name=stream_name,
@@ -618,7 +653,7 @@ async def test_client(
             )
             rich.print("--> dict context w/history:", context)
 
-    if 1:
+    if 0:
         from ..items import Collection, NamedItem
 
         class Repo(NamedItem):
@@ -642,8 +677,6 @@ async def test_client(
                 "dee", model=settings, path=key, exclude_defaults=True
             )
 
-        import rich
-
         rich.print(
             "GET SETTINGS:",
             await client.get_context(
@@ -652,6 +685,19 @@ async def test_client(
                 path=key,
             ),
         )
+
+    if 1:
+        # testing touched notifications
+
+        async def on_touched(msg):
+            print("Touched !", msg.data)
+
+        client.add_on_touched(on_touched)
+        key = "dev_test"
+        await client.set("dev_context", name=key, value="test")
+
+        await asyncio.sleep(3)  # wait for the notification to arrive
+
     print("Stopping")
     await client.disconnect()
 
@@ -679,21 +725,25 @@ if __name__ == "__main__":
         start_service(
             # nats_endpoint="tls://connect.ngs.global",
             # secret_cred="/tmp/test.creds",
+            # FOR DEV:
             # stream_name="dev_settings",
             # subject_prefix="dev.settings.proto",
+            # /!\ FOR TEST ON PROD STREAM:
+            # stream_name="tgzr_settings",
+            # subject_prefix="tgzr.proto.settings",
         )
     elif sys.argv[-1] == "client":
         # FOR DEV
-        # stream_name="dev_settings",
-        # subject_prefix="dev.settings.proto",
+        stream_name = "dev_settings"
+        subject_prefix = "dev.settings.proto"
 
         # FOR ONLINE TEST
         # stream_name = "test_settings"
         # subject_prefix = "test.settings.proto"
 
         # FOR PROD
-        stream_name = "tgzr_settings"
-        subject_prefix = "tgzr.proto.settings"
+        # stream_name = "tgzr_settings"
+        # subject_prefix = "tgzr.proto.settings"
 
         start_test_client(
             nats_endpoint="tls://connect.ngs.global",

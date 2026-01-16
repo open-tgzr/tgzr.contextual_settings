@@ -1391,6 +1391,7 @@ name = "tgzr-contextual-settings"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -1409,6 +1410,7 @@ requires-dist = [
     { name = "nats-py", extras = ["nkeys"], marker = "extra == 'jetstream'" },
     { name = "nicegui", marker = "extra == 'demo'", specifier = ">=2.20.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
+    { name = "rich", specifier = ">=14.2.0" },
     { name = "tgzr-nice", marker = "extra == 'demo'" },
 ]
 provides-extras = ["demo", "jetstream"]
