@@ -18,7 +18,8 @@ ENV UV_LINK_MODE=copy
 RUN uv venv 
 RUN uv pip install nats-py[nkeys]
 ADD "https://www.random.org/cgi-bin/randbyte?nbytes=10&format=h" skipcache
-RUN uv pip install tgzr.contextual_settings
+RUN uv pip install tgzr.contextual_settings==0.0.12
+# RUN uv pip install tgzr.contextual_settings
 RUN uv pip list
 
 # Reset the entrypoint, don't invoke `uv`

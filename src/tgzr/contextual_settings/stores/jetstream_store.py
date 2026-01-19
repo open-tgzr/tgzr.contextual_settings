@@ -232,7 +232,11 @@ class ClientBroker:
     async def send_cmd(self, cmd_name, **kwargs) -> None: ...
     async def send_query(self, query_name: str, **kwargs) -> Any: ...
 
-    async def _on_touch_event(self, event) -> None: ...
+    async def _on_touch_event(self, msg) -> None:
+        print("Got touch Event:", msg)
+        for on_touched in self._on_touched:
+            await on_touched(msg)
+
     def add_on_touched(self, coro):
         self._on_touched.append(coro)
 
@@ -288,11 +292,6 @@ class JetStreamClientBroker(ClientBroker):
         data = json.loads(response.data.decode())
         print("[QUERY SENT]", query_name, kwargs, "@", subject, "->", response)
         return data
-
-    async def _on_touch_event(self, msg) -> None:
-        print("Got touch Event:", msg)
-        for on_touched in self._on_touched:
-            await on_touched(msg)
 
 
 class JetStreamStoreClient(BaseStore):
@@ -696,7 +695,7 @@ async def test_client(
         key = "dev_test"
         await client.set("dev_context", name=key, value="test")
 
-        await asyncio.sleep(3)  # wait for the notification to arrive
+        await asyncio.sleep(30)  # wait for the notification to arrive
 
     print("Stopping")
     await client.disconnect()
@@ -734,8 +733,8 @@ if __name__ == "__main__":
         )
     elif sys.argv[-1] == "client":
         # FOR DEV
-        stream_name = "dev_settings"
-        subject_prefix = "dev.settings.proto"
+        # stream_name = "dev_settings"
+        # subject_prefix = "dev.settings.proto"
 
         # FOR ONLINE TEST
         # stream_name = "test_settings"
