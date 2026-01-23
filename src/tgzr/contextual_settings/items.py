@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Type, TypeVar, Any, get_args
+from typing import Type, TypeVar, Any, get_args, Generic
 
 from uuid import uuid4, UUID
 
@@ -49,9 +49,12 @@ class NamedItem(Item):
 ItemType = TypeVar("ItemType", bound=Item)
 
 T = TypeVar("T")
+T2 = TypeVar("T2")
+
+ItemType = TypeVar("ItemType", bound=Item)
 
 
-class Collection[ItemType: Item](pydantic.BaseModel):
+class Collection(pydantic.BaseModel, Generic[ItemType]):
     items: list[ItemType] = pydantic.Field(default_factory=list)
 
     @classmethod
@@ -62,13 +65,13 @@ class Collection[ItemType: Item](pydantic.BaseModel):
         cls: Type[T], params: Type[Any] | tuple[Type[Any], ...]
     ) -> Type[Any]:
         """Hack to have __orig_class__ working on pydandic.BaseModel"""
-        create_model = super().__class_getitem__(params)
+        created_model = super().__class_getitem__(params)
 
-        class _Generic[T]:
+        class _Generic(Generic[T2]):
             pass
 
-        create_model.__orig_class__ = _Generic[params]  # type: ignore
-        return create_model
+        created_model.__orig_class__ = _Generic[params]  # type: ignore
+        return created_model
 
     def item_type(self) -> Type[ItemType]:
         return get_args(self.__orig_class__)[0]
